@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import List, Tuple, Set
 from pathlib import Path
 import ast
 
@@ -252,8 +252,8 @@ def chunk_python_ast(
                     covered_ranges.append((start_char, end_char))
 
     # Before main loop — run ONCE
-    method_nodes: set = set()
-    nested_classes: set = set()
+    method_nodes: Set[int] = set()
+    nested_classes: Set[int] = set()
 
     for parent in ast.walk(tree):
         if isinstance(parent, ast.ClassDef):
