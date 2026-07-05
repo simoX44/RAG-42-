@@ -39,20 +39,21 @@ debug:
 		--k 10 \
 		--save_directory data/output/search_results
 
+
 clean:
-	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-	find . -type d -name ".mypy_cache" -exec rm -rf {} + 2>/dev/null || true
-	find . -type f -name "*.pyc" -delete 2>/dev/null || true
-	find . -type f -name "*.pyo" -delete 2>/dev/null || true
+	find . -type d -name __pycache__ -exec rm -rf {} +
+	find . -type d -name .mypy_cache -exec rm -rf {} +
+	find . -type f -name "*.pyc" -delete
+
 
 fclean:
-	rm -rf data/output
+	rm -rf data/output/search_results
 	rm -rf data/processed/*.pkl
 
 
 lint:
-	flake8 .
-	mypy . \
+	flake8 src
+	mypy src \
 		--warn-return-any \
 		--warn-unused-ignores \
 		--ignore-missing-imports \

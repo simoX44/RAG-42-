@@ -9,7 +9,20 @@ INDEX_DIR = Path("data/processed")
 
 
 def tokenize(text: str) -> List[str]:
-    """Code-aware tokenizer that respects Python snake_case."""
+    """Tokenize text for BM25 indexing, preserving snake_case sub-tokens.
+
+    Lowercases the input, strips all punctuation except underscores, and splits
+    on whitespace.  For each token that contains an underscore the individual
+    parts are appended as additional tokens so that both ``my_func`` and its
+    components ``my`` and ``func`` are searchable.
+
+    Args:
+        text: Raw text to tokenize.
+
+    Returns:
+        A list of lowercase string tokens, with snake_case tokens expanded
+        into their constituent parts.
+    """
     text = text.lower()
     punct = string.punctuation.replace('_', '')
     clean_text = text.translate(str.maketrans(punct, ' ' * len(punct)))
@@ -23,7 +36,19 @@ def tokenize(text: str) -> List[str]:
 
 
 def build_and_save_index(chunks: List[Chunk]) -> None:
-    """Builds separate BM25 indexes for docs and code files."""
+    """Build separate BM25 indexes for docs and code chunks and persist them.
+
+    Splits ``chunks`` by kind (``.md``/``.txt`` vs ``.py``), builds a
+    ``BM25Okapi`` index for each group, and writes four pickle files to
+    ``INDEX_DIR``: ``bm25_docs.pkl``, ``chunks_docs.pkl``, ``bm25_code.pkl``,
+    and ``chunks_code.pkl``.
+
+    Args:
+        chunks: All chunks produced by the chunking stage.
+
+    Returns:
+        None.  Progress is printed to stdout and indexes are written to disk.
+    """
     print(f"Building index for {len(chunks)} chunks...")
 
     docs_chunks = [c for c in chunks if c.kind in (".md", ".txt")]
@@ -55,7 +80,23 @@ def build_and_save_index(chunks: List[Chunk]) -> None:
 
 
 def load_index(index_type: str = "all") -> Any:
-    """Loads BM25 index(es) from disk."""
+    """Load one or both BM25 indexes from disk.
+
+    Args:
+        index_type: Which index to load.  One of:
+
+            * ``"docs"`` — returns ``(bm25_docs, chunks_docs)``.
+            * ``"code"`` — returns ``(bm25_code, chunks_code)``.
+            * any other value (default ``"all"``) — returns
+              ``(bm25_docs, chunks_docs, bm25_code, chunks_code)``.
+
+    Returns:
+        A tuple whose shape depends on ``index_type`` as described above.
+
+    Raises:
+        FileNotFoundError: If the requested index files are not present in
+            ``INDEX_DIR``.
+    """
     try:
         if index_type == "docs":
             with open(INDEX_DIR / "bm25_docs.pkl", "rb") as f:
@@ -94,10 +135,28 @@ def search_bm25(
     query: str,
     k: int = 10
 ) -> List[Chunk]:
-    """Search the index for the top-k results."""
+    """Return the top-k chunks from a BM25 index for the given query.
+
+    Only chunks with a BM25 score strictly greater than zero are included;
+    if fewer than ``k`` chunks have a positive score, a shorter list is
+    returned.
+
+    Args:
+        bm25: A fitted ``BM25Okapi`` instance to query.
+        chunks: The list of ``Chunk`` objects that was used to build ``bm25``;
+            indices must correspond 1-to-1.
+        query: Natural-language or code search query.
+        k: Maximum number of results to return (default: 10).
+
+    Returns:
+        A list of up to ``k`` ``Chunk`` objects ranked by descending BM25
+        score, excluding zero-score results.
+    """
     query_tokens = tokenize(query)
     scores = bm25.get_scores(query_tokens)
     score_index_pairs = [(scores[i], i) for i in range(len(scores))]
     score_index_pairs.sort(reverse=True, key=lambda x: x[0])
-    top_indices = [index for score, index in score_index_pairs[:k] if score > 0]
+    top_indices = [
+        index for score, index in score_index_pairs[:k] if score > 0
+    ]
     return [chunks[i] for i in top_indices]

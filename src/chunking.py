@@ -14,7 +14,15 @@ class Chunk:
 
 
 def read_file(file: Path) -> str:
-    """Read file content with consistent line endings."""
+    """Read file content with consistent line endings.
+
+    Args:
+        file: Path to the file to read.
+
+    Returns:
+        The file contents as a string, or an empty string if the file
+        cannot be decoded or does not exist.
+    """
     try:
         with open(file, "r", encoding="utf-8", newline="") as f:
             return f.read()
@@ -25,7 +33,22 @@ def read_file(file: Path) -> str:
 def find_smart_split_point(
     text: str, start: int, max_size: int, is_python: bool
 ) -> int:
-    """Find a natural split point within max_size characters."""
+    """Find a natural split point within max_size characters from start.
+
+    Searches backwards from ``start + max_size`` for a language-appropriate
+    boundary (class/function boundaries for Python, heading/paragraph breaks
+    for Markdown).  Falls back to the hard limit if no boundary is found.
+
+    Args:
+        text: The full source text.
+        start: The character offset at which the current chunk begins.
+        max_size: Maximum number of characters to include from ``start``.
+        is_python: ``True`` to use Python breakpoints; ``False`` for Markdown.
+
+    Returns:
+        A character offset within ``text`` that marks a natural end position,
+        at most ``start + max_size`` characters from the beginning.
+    """
     if start + max_size >= len(text):
         return len(text)
 
@@ -42,7 +65,16 @@ def find_smart_split_point(
 
 
 def get_char_offset(text: str, line_number: int) -> int:
-    """Convert line number to character offset in text."""
+    """Convert a zero-based line number to a character offset in text.
+
+    Args:
+        text: The source text to index into.
+        line_number: Zero-based line number to convert.
+
+    Returns:
+        The character offset of the start of ``line_number``, clamped to
+        ``len(text)`` if the line number exceeds the text length.
+    """
     lines = text.split("\n")
     offset = 0
     for i, line in enumerate(lines):
@@ -59,16 +91,29 @@ def split_and_make_chunks(
     context_header: str,
     max_chunk_size: int
 ) -> List[Chunk]:
-    """
-    Split text into chunks with context header prepended.
-    base_start is the offset in the original file.
+    """Split raw_text into chunks with context_header prepended to each.
+
+    Character offsets stored on each ``Chunk`` are relative to the original
+    file (``base_start`` is added to all local positions).
+
+    Args:
+        path_str: File path stored on every produced ``Chunk``.
+        raw_text: The text to split (not including the header).
+        base_start: Character offset of ``raw_text`` within the original file.
+        context_header: Header string prepended to each chunk's text.
+        max_chunk_size: Maximum total characters (header + body) per chunk.
+
+    Returns:
+        A list of ``Chunk`` objects, possibly empty if ``raw_text`` is blank.
     """
     chunks: List[Chunk] = []
     effective_limit = max_chunk_size - len(context_header)
     start = 0
 
     while start < len(raw_text):
-        end = find_smart_split_point(raw_text, start, effective_limit, is_python=True)
+        end = find_smart_split_point(
+            raw_text, start, effective_limit, is_python=True
+        )
         sub_text = raw_text[start:end].strip()
         if sub_text:
             chunks.append(Chunk(
@@ -87,7 +132,19 @@ def get_uncovered_ranges(
     text_len: int,
     covered_ranges: List[Tuple[int, int]]
 ) -> List[Tuple[int, int]]:
-    """Find text ranges not covered by any AST chunk."""
+    """Return ranges in ``[0, text_len)`` not covered by any AST chunk.
+
+    Args:
+        text_len: Total length of the source text in characters.
+        covered_ranges: List of ``(start, end)`` pairs already claimed by AST
+            chunks.  Ranges may be unsorted and need not be contiguous.
+
+    Returns:
+        A sorted list of ``(start, end)`` pairs representing uncovered gaps,
+        including the leading gap before the first covered range and the
+        trailing gap after the last, if present.  Returns
+        ``[(0, text_len)]`` when ``covered_ranges`` is empty.
+    """
     if not covered_ranges:
         return [(0, text_len)]
 
@@ -122,7 +179,19 @@ DOC_SYNONYMS = {
 
 
 def enrich_path_keywords(path_str: str) -> str:
-    """Extract and expand path keywords with domain synonyms."""
+    """Extract path components as keywords and expand with domain synonyms.
+
+    Path separators, hyphens, underscores, and common extensions are replaced
+    with spaces.  Known domain terms (e.g. ``"cli"``, ``"benchmark"``) are
+    augmented with their synonyms from ``DOC_SYNONYMS``.
+
+    Args:
+        path_str: A file path string (relative or absolute).
+
+    Returns:
+        A lower-cased, space-separated keyword string derived from the path,
+        enriched with any matching ``DOC_SYNONYMS`` expansions.
+    """
     path = Path(path_str).parts
     keywords = " ".join(path).lower()
     keywords = (
@@ -144,7 +213,23 @@ def chunk_file_by_chars(
     max_chunk_size: int,
     is_python: bool = False
 ) -> List[Chunk]:
-    """Character-based chunking. Docs use sliding window, code uses fixed splits."""
+    """Split text into character-based chunks.
+
+    Markdown/text files use a sliding window with 100-character overlap and a
+    keyword-enriched header; Python files use non-overlapping fixed splits with
+    no header.
+
+    Args:
+        path_str: File path stored on every produced ``Chunk``.
+        text: Full file content to split.
+        max_chunk_size: Target maximum characters per chunk (may be reduced for
+            Markdown files to stay within the 2000-character total limit).
+        is_python: ``True`` for Python source files; ``False`` for Markdown or
+            plain text.
+
+    Returns:
+        A list of ``Chunk`` objects covering the entire text.
+    """
     kind = ".py" if is_python else ".md"
     chunks: List[Chunk] = []
     context_header = ""
@@ -189,21 +274,37 @@ def chunk_python_ast(
     text: str,
     max_chunk_size: int
 ) -> List[Chunk]:
-    """
-    AST-aware chunking for Python files.
-    Methods get class context prepended.
-    Large nodes are split by character count.
-    Positions always refer to original file.
+    """Chunk a Python source file using AST node boundaries.
+
+    Each top-level function, class header, and method is emitted as a separate
+    chunk.  Methods include their full class hierarchy in the header.  Nested
+    classes are handled recursively.  Large nodes are split further by
+    character count.  Any text not covered by an AST node (imports,
+    module-level statements) is collected and emitted as additional chunks.
+    All character
+    offsets refer to positions in the original file.
+
+    Falls back to ``chunk_file_by_chars`` if the file cannot be parsed.
+
+    Args:
+        path_str: File path stored on every produced ``Chunk``.
+        text: Full Python source text.
+        max_chunk_size: Maximum characters per chunk (header included).
+
+    Returns:
+        A list of ``Chunk`` objects covering the entire file.
     """
     chunks: List[Chunk] = []
 
     try:
         tree = ast.parse(text)
     except SyntaxError:
-        return chunk_file_by_chars(path_str, text, max_chunk_size, is_python=True)
+        return chunk_file_by_chars(
+            path_str, text, max_chunk_size, is_python=True
+        )
 
     covered_ranges: List[Tuple[int, int]] = []
-   
+
     # Recursive function to process classes and their methods
     def process_class(node: ast.ClassDef, parent_classes: List[str]) -> None:
         class_hierarchy = parent_classes + [node.name]
@@ -211,7 +312,9 @@ def chunk_python_ast(
 
         # Class header chunk
         class_start = get_char_offset(text, node.lineno - 1)
-        class_end = get_char_offset(text, min(node.lineno + 5, node.end_lineno))
+        assert node.end_lineno is not None
+        end_line = min(node.lineno + 5, node.end_lineno)
+        class_end = get_char_offset(text, end_line)
         class_header = text[class_start:class_end].strip()
 
         if class_header:
@@ -237,17 +340,20 @@ def chunk_python_ast(
             elif isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # Method — chunk with full class context
                 start_char = get_char_offset(text, item.lineno - 1)
+                assert item.end_lineno is not None
                 end_char = get_char_offset(text, item.end_lineno)
                 method_text = text[start_char:end_char].strip()
 
                 if method_text:
+                    # Add class context to header
                     header = (
                         f"# File: {path_str}\n"
-                        f"# Class: {class_context}\n" # Add class context to header
+                        f"# Class: {class_context}\n"
                         f"# Method: {item.name}\n"
                     )
                     chunks.extend(split_and_make_chunks(
-                        path_str, method_text, start_char, header, max_chunk_size
+                        path_str, method_text,
+                        start_char, header, max_chunk_size
                     ))
                     covered_ranges.append((start_char, end_char))
 
@@ -263,8 +369,8 @@ def chunk_python_ast(
                     method_nodes.add(id(item))
                 # Track nested classes
                 if isinstance(item, ast.ClassDef):
-                    nested_classes.add(id(item)) 
-    
+                    nested_classes.add(id(item))
+
     for node in ast.walk(tree):
         # Classes
         if isinstance(node, ast.ClassDef):
@@ -280,6 +386,7 @@ def chunk_python_ast(
                 continue
 
             start_char = get_char_offset(text, node.lineno - 1)
+            assert node.end_lineno is not None
             end_char = get_char_offset(text, node.end_lineno)
             func_text = text[start_char:end_char].strip()
 
@@ -303,7 +410,19 @@ def chunk_python_ast(
 
 
 def chunk_file(file: Path, path_str: str, chunk_size: int) -> List[Chunk]:
-    """Route to correct chunking strategy based on file type."""
+    """Dispatch to the appropriate chunking strategy based on file extension.
+
+    ``.py`` files use AST-aware chunking; all other supported types use
+    character-based chunking.  Returns an empty list for empty files.
+
+    Args:
+        file: ``Path`` object used to read the file and inspect its suffix.
+        path_str: File path string stored on every produced ``Chunk``.
+        chunk_size: Maximum characters per chunk passed to the chunker.
+
+    Returns:
+        A list of ``Chunk`` objects, or an empty list if the file is empty.
+    """
     text = read_file(file)
     if not text.strip():
         return []
@@ -318,7 +437,17 @@ def retrieve_files(
     repo_root: str,
     max_chunk_size: int = 2000
 ) -> List[Chunk]:
-    """Retrieve and chunk all valid files from the repository."""
+    """Recursively find and chunk all valid files under ``repo_root``.
+
+    Only files with extensions ``.py``, ``.md``, or ``.txt`` are processed.
+
+    Args:
+        repo_root: Root directory to search recursively.
+        max_chunk_size: Maximum characters per chunk (default: 2000).
+
+    Returns:
+        A flat list of ``Chunk`` objects from all discovered files.
+    """
     chunks: List[Chunk] = []
     repo_path = Path(repo_root)
     valid_extensions = {".py", ".md", ".txt"}
